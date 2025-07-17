@@ -1,3 +1,2 @@
 # BMS-6830B
-Battery Management Firwmare thgouth BMS 6830B SPI bus on the CubeMX/IDE NUCLEO‑G473RE board running on the STM32G473RET6 MCU.ng 
-Created for the use of Poseidon Racing Formula Student Team
+Battery management firmware for the BMS‑6830B, communicating over SPI on the NUCLEO‑G473RE board (STM32G473RET6 MCU), developed in STM32CubeMX/IDE. Created for the Poseidon Racing Formula Student Team.
