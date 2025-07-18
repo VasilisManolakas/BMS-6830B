@@ -17,19 +17,22 @@
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
 #include "main.h"
 #include "adBms_Application.h"
-/* Private includes ----------------------------------------------------------*/
-/* USER CODE BEGIN Includes */
+
+// ADI BMS headers (must be here so the IDE sees the enums)
 #include "adBms6830Data.h"
-#include "adBms6830ParseCreate.h"	//Including the 6830's libs.
-#include "adBms6830CmdList.h"		//Necessary lib inclusion for the task.
-#include "adBms6830GenericType.h"
+#include "adBms6830ParseCreate.h"
+//#include "adBms6830CmdList.h"
+#include "adBms6830GenericType.h"   // <-- defines TYPE { Cell, AvgCell, … } and GRP { A, B, …, P }
 #include "common.h"
 #include "adbms_main.h"
 #include "mcuWrapper.h"
 #include "serialPrintResult.h"
 #include <math.h>
+/* USER CODE END Includes */
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -57,7 +60,8 @@ UART_HandleTypeDef hlpuart1;
 SPI_HandleTypeDef hspi1;
 
 /* USER CODE BEGIN PV */
-cell_asic IC[1];
+extern cell_asic IC[];    // “I’ll use the driver’s IC array”
+
 uint8_t HeaderTxBuffer[] = "****SPI - Two Boards communication based on Polling **** SPI Message ******** SPI Message ******** SPI Message ****";
 /* USER CODE END PV */
 
@@ -124,76 +128,43 @@ int main(void)
   setvbuf(stdin, NULL, _IONBF, 0);
   /* USER CODE BEGIN 2 */
   //adbms_main();
-  typedef struct {double cell_voltage[16]; bool open_wire[16];} CellVoltages;
-  CellVoltages Voltages;
-  int16_t reading;
-  /*Piece of Code Intended to Configure IC.
-  To elaborate:
-  The following piece of code will initialize the configuration
-  on the ADBMS 6830. More precisely :
-  It WAKES UP the ADBMS 6830 out of its low power standby mode,
-  so that it is able to receive commands through the SPI Protocol.
-   Sthn Synexeia:
-   It goes through the IC array of TOTAL_IC elements.
-   Elaborating:
-   1. Build ta frames, dhladh:
-  	   Each Config on the ADBMS 6830B has
-  	   	   Mia dieythinsi register 4 bit
-  	   	   ena read/write bit 1bit
-  	   	   kapoion arithmo apo bit dedomenwn ( 8 h 16 bits)
-  	   	   ena PROAIRETIKO CRC.
-   2. Transfer ta bits THROUGH THE SPI Protocol.
-   3. Return otan to ADBMS 6830B einai configured kai etoimo na metrhsei tis taseis.
-  */
-  adBms6830_init_config(1, &IC[0]);  // TOTAL_IC (=1) einai o arithmos twn ASIC poy xrhsimopoioume.
-                                     // Sthn prokeimenh periptwsh exoume 1 ADBMS 6830 B.
-  adBms6830_start_adc_cell_voltage_measurment(1); // Set gia metrhseis tashs.
+  extern uint8_t RDCVALL[2];  //Extern definition of read all Cell Voltages.
+  // Struct to hold cell measurements (16 channels A–P)
+      typedef struct {
+          double cell_voltage[16];  // Raw cell voltages (V)
+          bool   open_wire[16];     // Open-wire flags per cell
+      } CellVoltages;
 
-  // For EACH IC.
-  static const double ADC_LSB   = 0.15e-3;  // LSB - According to the datasheet the ADBMS 6830 uses two 16-bit ADCs, 0.15mV per count.
-  //static const offset = x; Tha h8ela na testarw to zero offsetting sto lab, omws den prolabainw. opote ta apotelesmata tha exoun ena mikro error margin.
+      static CellVoltages Voltages;
 
-  // Initialize arrays
-  for (int i = 0; i < 16; ++i) {
-      Voltages.open_wire[i]    = false;  // Struct values Initialization.
-      Voltages.cell_voltage[i] = 0.0L;
-  }
+      // ADC conversion constant (0.15 mV per count)(ADBMS6830 Datasheet)
+      const double ADC_LSB = 0.15e-3;
 
-  for (unsigned ch = 1; ch <= 16; ++ch) {
-      reading = adBms6830_read_single_cell_code(ch); /* diabazetai o
-        16 BIT ADC kwdikas apo to channel ch
-        se morfh symplhrwmatos tou 2
-        me MSB = proshmo.
-        Ara an MSB =1 exoume arnhtiko arithmo, alliws thetiko. */
+      // 1) Initialize and configure the ADBMS6830B
+      adBms6830_init_config(1, &IC[0]);
+      // 2) Start cell-voltage conversion
+      adBms6830_start_adc_cell_voltage_measurment(1);  //1 Because only one ADBMS6830B is Available.
+      // 3) Wait for conversion to complete
+      HAL_Delay(1);  //1ms Delay
 
-      // Convert two's complement reading into code.
-      uint16_t code = (reading < 0)
-                    ? (uint16_t)(reading + 0x10000u)
-                    : (uint16_t)reading;//wrap around fix. (mod 2^n). an exoume arnhtiko MSB tote prosthetoume 2^16 & cast. Eidallws, cast.
+      while (1)
+      {
+          // Read all 16 cell voltages at once
+          adBmsReadData(1, &IC[0], RDCVALL, Cell, ALL_GRP);
+          // Convert and store
+          for (int i = 0; i < 16; ++i) {
+              int16_t raw = IC[0].cell.c_codes[i];
+              uint16_t code = (raw < 0)
+                               ? (uint16_t)(raw + 0x10000u)
+                               : (uint16_t)raw;
+              Voltages.cell_voltage[i] = (double)code * ADC_LSB;
+              Voltages.open_wire[i]   = isnan(Voltages.cell_voltage[i]);
+          }
 
-      // ADC ELECTRICAL CHARACTERISTICS // Transfer Function
-      double measured_volts = code * ADC_LSB;  // Pollaplasiasmos me to LSB gia thn apokomidh ths endeikshs.
-
-      // Sanity check the voltage in the physical range [0…5.5 V]
-      if (measured_volts < 0.0 || measured_volts > 5.5) {
-          // Edw exei ginei lathos. (open wire error)
-          Voltages.cell_voltage[ch-1] = NAN;   // Mh egkyrh timh (not-a-number)
-          Voltages.open_wire[ch-1]    = true;  // Flag Lathous. (Open wire,dhladh anoikto kyklwma h spasmenh syndesh metaksy cell - monitor.)
-      } else {
-          Voltages.cell_voltage[ch-1] = measured_volts;
-          Voltages.open_wire[ch-1]    = false;
+          HAL_Delay(2);  //2ms Delay
       }
-  }
-
-  // Printing mesw ths alysidas PRINTF->PUTCHAR_PROTOTYPE->UART_TRANSMIT.
-  for (int i = 0; i < 16; ++i) {
-      if (Voltages.open_wire[i])
-          printf("Cell %d: Open Wire Error.\n", i);
-      else
-          printf("Cell %d: %.5f V\n", i, Voltages.cell_voltage[i]);  // PUTCHAR PROTOTYPE -> UART TRANSMIT
-  }
-
-
+      for (unsigned ch = 1;		ch<16;	++ch)
+    	  printf("Cell %u: Voltage = %.5f V, Open Wire Error = %s\r\n", ch , Voltages.cell_voltage[ch] , Voltages.open_wire[ch] ? "YES" : "NO");
   /* USER CODE END 2 */
 
   /* Infinite loop */
